@@ -40,20 +40,17 @@ jobs:
           ./gradlew \
             :shared:compileJava \
             :api-service:compileJava \
-            :worker-service:compileJava \
-            --no-daemon
+            :worker-service:compileJava
 
       - name: Run tests
         run: |
           ./gradlew \
             :shared:test \
             :api-service:test \
-            :worker-service:test \
-            --no-daemon
+            :worker-service:test
 
       - name: Build executable service JARs
         run: |
           ./gradlew \
             :api-service:bootJar \
-            :worker-service:bootJar \
-            --no-daemon
+            :worker-service:bootJar
