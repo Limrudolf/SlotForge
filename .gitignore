@@ -1,0 +1,14 @@
+.gradle/
+**/build/
+
+.idea/
+.vscode/
+*.iml
+
+.env
+*.log
+
+.DS_Store
+Thumbs.db
+
+agent-instructions.md

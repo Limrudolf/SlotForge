@@ -1,0 +1,22 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+
+    repositories {
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'slotforge'
+
+include 'api-service', 'worker-service', 'shared'
+
+project(':api-service').projectDir = file('backend/api-service')
+project(':worker-service').projectDir = file('backend/worker-service')
+project(':shared').projectDir = file('backend/shared')

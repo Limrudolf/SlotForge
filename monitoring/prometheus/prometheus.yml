@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: slotforge-api
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - api:8080
+
+  - job_name: slotforge-worker
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - worker:8081
