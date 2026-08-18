@@ -4,7 +4,7 @@
 
 SlotForge is an API-first event-booking backend designed to explore correctness under high-concurrency demand. The project focuses on scarce-capacity reservations, idempotency, asynchronous workflows, observability, and production-style deployment practices.
 
-> Current status: Sprint 0 establishes the project foundation and reproducible local environment. Booking APIs and domain behavior will be introduced incrementally in later sprints.
+> Current status: Sprint 1 provides the relational domain model and APIs for venues, events, sessions, and availability. Authentication and concurrency-safe booking begin in later sprints.
 
 ## Architecture
 
@@ -89,6 +89,8 @@ Wait until the API, worker, PostgreSQL, and Redis health checks report healthy.
 | API health | http://localhost:8080/actuator/health |
 | API information | http://localhost:8080/actuator/info |
 | API metrics | http://localhost:8080/actuator/prometheus |
+| OpenAPI JSON | http://localhost:8080/v3/api-docs |
+| Swagger UI | http://localhost:8080/swagger-ui.html |
 | Worker health | http://localhost:8081/actuator/health |
 | Worker information | http://localhost:8081/actuator/info |
 | Worker metrics | http://localhost:8081/actuator/prometheus |
@@ -114,7 +116,98 @@ Run the worker in a second terminal:
 
 The API defaults to port `8080`, and the worker defaults to port `8081`.
 
-PostgreSQL and Redis are provisioned during Sprint 0 but are not yet consumed by application code. Database integration begins in Sprint 1.
+The API requires PostgreSQL. To run it outside Compose while keeping the local database containerized:
+
+```bash
+docker compose up -d postgres
+./gradlew :api-service:bootRun
+```
+
+Datasource settings can be overridden with `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD`.
+
+## Sprint 1 API Examples
+
+Create a venue:
+
+```bash
+curl -i -X POST http://localhost:8080/api/v1/venues \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Stockholm Concert Hall",
+    "addressLine1": "Hötorget 8",
+    "city": "Stockholm",
+    "postalCode": "111 57",
+    "countryCode": "SE"
+  }'
+```
+
+Copy the returned venue UUID, then create an event:
+
+```bash
+curl -i -X POST http://localhost:8080/api/v1/events \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Stockholm Summer Concert",
+    "description": "An outdoor evening concert"
+  }'
+```
+
+List or filter events:
+
+```bash
+curl 'http://localhost:8080/api/v1/events?page=0&size=20'
+curl 'http://localhost:8080/api/v1/events?page=0&size=20&status=DRAFT'
+```
+
+Partially update an event:
+
+```bash
+curl -i -X PATCH http://localhost:8080/api/v1/events/{eventId} \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"PUBLISHED"}'
+```
+
+Create a session with an explicit timestamp offset and IANA display timezone:
+
+```bash
+curl -i -X POST http://localhost:8080/api/v1/events/{eventId}/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "venueId": "{venueId}",
+    "startTime": "2026-10-10T19:00:00+02:00",
+    "endTime": "2026-10-10T22:00:00+02:00",
+    "displayTimezone": "Europe/Stockholm",
+    "totalCapacity": 500
+  }'
+```
+
+Retrieve sessions and availability:
+
+```bash
+curl 'http://localhost:8080/api/v1/events/{eventId}/sessions?page=0&size=20'
+curl 'http://localhost:8080/api/v1/sessions/{sessionId}'
+curl 'http://localhost:8080/api/v1/sessions/{sessionId}/availability'
+```
+
+Invalid requests use one error shape:
+
+```json
+{
+  "timestamp": "2026-08-18T15:00:00Z",
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Request validation failed",
+  "path": "/api/v1/events",
+  "fieldErrors": [
+    {
+      "field": "name",
+      "message": "Event name is required"
+    }
+  ]
+}
+```
+
+All endpoint schemas and constraints are available through Swagger UI.
 
 ## Building and Testing
 

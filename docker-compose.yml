@@ -45,6 +45,9 @@ services:
     environment:
       SERVER_PORT: 8080
       APP_VERSION: local
+      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      DATABASE_USERNAME: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "${API_PORT:-8080}:8080"
     depends_on:

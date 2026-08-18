@@ -24,7 +24,7 @@ Build a flagship backend engineering portfolio project that demonstrates product
 | Database | Supabase Postgres |
 | Local database | Dockerized PostgreSQL |
 | Cache | Docker Redis first, optional managed Redis later |
-| Queue | AWS SQS plus DLQ |
+| Event streaming | Apache Kafka locally; Amazon MSK Serverless for final AWS validation |
 | Auth | Spring Security |
 | API style | REST plus OpenAPI |
 | Frontend | None, API-first |
@@ -57,8 +57,8 @@ This project is designed to demonstrate:
 - Booking state machines
 - Fake payment workflow
 - Transactional outbox
-- AWS SQS
-- Dead-letter queues
+- Apache Kafka and Spring for Apache Kafka
+- Kafka partitions, consumer groups, offsets, retry topics, and dead-letter topics
 - Async worker processing
 - Redis caching
 - Redis-backed rate limiting
@@ -75,7 +75,7 @@ This project is designed to demonstrate:
 - Architecture documentation
 - Multi-replica correctness testing
 - Event schema versioning
-- Worker graceful shutdown and SQS visibility-timeout handling
+- Worker graceful shutdown, consumer-group rebalancing, and offset commit handling
 - Refresh token rotation and revocation
 - CORS policy design
 - Dependency, container image, and Terraform security scanning
@@ -94,7 +94,9 @@ Default approach:
 - Use Docker Compose for most development.
 - Use Supabase free-tier Postgres where practical.
 - Use local Redis first.
-- Use local or mocked SQS during early development where possible.
+- Run a single-node Kafka broker in KRaft mode through Docker Compose for local development.
+- Use Amazon MSK Serverless for the short final cloud validation rather than operating a single production broker on Fargate.
+- Destroy the MSK Serverless cluster after collecting deployment evidence; scaling ECS services to zero does not stop managed Kafka charges.
 - Deploy to AWS ECS Fargate only in the final deployment sprint.
 - Keep Fargate services stopped or scaled down when not actively testing.
 - Run one short final multi-replica validation with the API service scaled to at least two ECS tasks behind the ALB.
@@ -126,24 +128,24 @@ Spring Boot API Service
         |
         |---- Supabase Postgres
         |---- Redis
-        |---- AWS SQS
+        |---- Apache Kafka
                   |
                   v
         Spring Boot Worker Service
         |
         |-- Outbox Publisher
         |-- Notification Worker
-        |-- Booking Expiry Worker
+        |-- Booking Expiry Scheduler
         |-- Waitlist Promotion Worker
         |-- Payment Event Worker
-        |-- Retry / DLQ Handling
+        |-- Retry / Dead-Letter Topic Handling
 ```
 
 ### Architecture Style
 
 The system should be a **modular monolith plus worker service**.
 
-The API service owns the core domain and synchronous user-facing APIs. The worker service processes asynchronous events from SQS and handles side effects such as notifications, booking expiry, waitlist promotion, and failed-event recovery.
+The API service owns the core domain and synchronous user-facing APIs. The worker service consumes versioned Kafka records and handles side effects such as notifications, waitlist promotion, payment-event processing, and failed-event recovery. Booking expiry is initiated by a database-backed scheduler because Kafka is not used as a delayed-message scheduler.
 
 This gives the project a real distributed-systems boundary without creating unnecessary microservice sprawl.
 
@@ -155,12 +157,14 @@ The project must avoid making distributed-systems claims that are not tested. In
 - The final results document must state whether zero overbooking was preserved across multiple API replicas.
 - Redis rate limiting must be safe across multiple API replicas because Redis is shared state.
 - Cache invalidation must be validated when requests hit different API replicas.
-- SQS worker processing must be idempotent because messages may be delivered more than once.
+- Kafka consumers must be idempotent because failures between a database commit and an offset commit can cause a record to be delivered again.
+- Topic partition keys must preserve the ordering required by each workflow: use `bookingId` for booking lifecycle events and `sessionId` for session-scoped waitlist and capacity events.
+- Independent side effects should use separate consumer groups so notification, waitlist, and audit consumers can process the same event stream independently.
 - Worker shutdown behavior must be documented for ECS deployments.
 
 ### Event Compatibility Requirements
 
-Outbox events and SQS messages must include an explicit event version.
+Outbox events and Kafka records must include an explicit event version.
 
 Every event should include at minimum:
 
@@ -182,17 +186,17 @@ The project should include an ADR explaining the compatibility strategy:
 - Prefer additive schema changes.
 - Do not rename or remove fields without introducing a new event version.
 - Workers should reject unknown event versions safely.
-- Failed incompatible events should be visible through logs, metrics, and DLQ inspection.
+- Failed incompatible events should be visible through logs, metrics, and dead-letter topic inspection.
 
 ### Worker Shutdown Requirements
 
 The worker service must handle graceful shutdown explicitly. ECS can stop tasks during deployment or scale-in, so worker behavior should be clear:
 
-- On shutdown, stop polling for new SQS messages.
-- Complete the current in-flight message if possible.
-- Delete the SQS message only after successful processing.
-- If the worker is terminated before completion, rely on SQS visibility timeout to make the message available again.
-- Ensure handlers are idempotent because a message may be processed again.
+- On shutdown, stop fetching new Kafka records and allow in-flight handlers to finish within the ECS stop timeout.
+- Commit offsets only after successful processing; do not commit an offset for unfinished work.
+- Configure listener concurrency, `max.poll.interval.ms`, and consumer-group session settings so long-running handlers do not cause avoidable rebalances.
+- If termination or a rebalance occurs before an offset is committed, allow Kafka to redeliver the record.
+- Ensure handlers are idempotent because a record may be processed again.
 - Configure ECS task stop timeout and document the tradeoff.
 
 ### Correctness Modeling Requirements
@@ -218,7 +222,7 @@ The system should explicitly model common backend correctness details:
 | Fake Payment | Payment-intent simulation, success/failure callbacks |
 | Waitlist | Waitlist joins, promotions, expiry, acceptance |
 | Outbox | Reliable event persistence before async publishing |
-| Worker | SQS consumption, retries, DLQ handling, async workflows |
+| Worker | Kafka consumption, consumer groups, retries, dead-letter topics, async workflows |
 | Audit | Sensitive action logging and booking history |
 | Observability | Metrics, structured logs, correlation IDs |
 
@@ -271,7 +275,7 @@ slotforge/
       modules/
         ecs/
         ecr/
-        sqs/
+        kafka/
         iam/
         alb/
         networking/
@@ -296,7 +300,7 @@ slotforge/
 
     adr/
       0001-modular-monolith-plus-worker.md
-      0002-sqs-over-kafka.md
+      0002-kafka-over-sqs.md
       0003-supabase-postgres.md
       0004-terraform-over-cdk.md
       0005-event-schema-versioning.md
@@ -734,11 +738,11 @@ POST /api/v1/fake-payments/{paymentIntentId}/timeout
 
 ---
 
-## Sprint 5: SQS, Transactional Outbox, Worker Service, and DLQ
+## Sprint 5: Kafka, Transactional Outbox, Worker Service, and Dead-Letter Topics
 
 ### Goal
 
-Add a production-style asynchronous processing layer using transactional outbox, AWS SQS, worker processing, retry handling, and dead-letter queues.
+Add a production-style event-streaming layer using a transactional outbox, Apache Kafka, consumer groups, partition-aware ordering, retry handling, and dead-letter topics.
 
 ### Learning Outcomes
 
@@ -748,14 +752,16 @@ By the end of this sprint, you should understand:
 - Transactional outbox pattern.
 - Event schema versioning.
 - At-least-once delivery.
-- SQS producers and consumers.
-- Dead-letter queues.
+- Kafka producers, consumers, topics, partitions, and offsets.
+- Consumer groups and independent event subscribers.
+- Record-key selection and partition-level ordering.
+- Retry and dead-letter topics.
 - Idempotent consumers.
 - Retry handling.
 - Async side effects.
 - Failure isolation.
 - Graceful worker shutdown.
-- SQS visibility-timeout semantics.
+- Offset commit, redelivery, rebalancing, and consumer-lag semantics.
 
 ### Technical Requirements
 
@@ -790,17 +796,26 @@ Outbox event types:
 Implement:
 
 - Write outbox events inside database transactions.
-- Publish outbox events to SQS after commit.
-- Worker service consumes SQS messages.
-- SQS message envelope includes `eventVersion`.
+- Poll unpublished outbox rows in batches, using database locking such as `FOR UPDATE SKIP LOCKED` so multiple publisher instances do not claim the same row concurrently.
+- Publish outbox events to Kafka and mark them published only after broker acknowledgement.
+- Accept that PostgreSQL-to-Kafka publication is at least once: a crash after the broker acknowledgement but before the outbox status update may publish a duplicate.
+- Worker service consumes Kafka records with Spring for Apache Kafka.
+- Kafka record envelopes include `eventVersion`; record headers carry correlation and tracing metadata.
+- Define initial topics such as `booking.lifecycle.v1`, `payment.lifecycle.v1`, `waitlist.lifecycle.v1`, and `notification.commands.v1`.
+- Use explicit record keys: `bookingId` for booking lifecycle ordering and `sessionId` for session-scoped waitlist ordering.
+- Use separate consumer groups for independent notification, waitlist, and audit side effects.
 - Worker handles notification simulation.
 - Worker records processing status.
-- Failed messages are retried.
-- Repeated failures go to DLQ.
+- Retriable failures are sent through bounded retry topics with backoff.
+- Exhausted or non-retriable failures go to a dead-letter topic with the original topic, partition, offset, exception, and event metadata.
+- Document that moving a record to a retry topic can allow later records from its original partition to overtake it; workflows requiring strict per-key ordering must retry in place or enforce valid state transitions when delayed records return.
 - Consumers are idempotent.
+- Store processed event IDs per consumer in PostgreSQL with a unique constraint so redelivery cannot duplicate side effects.
 - Unknown event versions are rejected safely and routed to failure handling.
-- Worker handles graceful shutdown by stopping new polling and completing or safely abandoning in-flight messages.
-- Integration tests for publishing and consuming.
+- Commit offsets only after successful processing or successful publication to the appropriate retry/dead-letter topic.
+- Worker handles graceful shutdown by pausing record intake, completing in-flight handlers where possible, and allowing uncommitted records to be redelivered after termination or rebalance.
+- Booking expiry uses a database-backed scheduled job over persisted expiry timestamps; Kafka is not treated as a delayed-message scheduler.
+- Integration tests for publishing and consuming with Testcontainers Kafka; do not depend on a shared developer broker in CI.
 
 ### APIs
 
@@ -818,18 +833,22 @@ GET  /api/v1/admin/worker-events
 ### Definition of Done
 
 - Booking lifecycle changes write outbox events.
-- Outbox publisher sends events to SQS.
-- Worker service consumes SQS messages.
-- SQS message envelope includes `eventVersion`.
+- Outbox publisher sends keyed, versioned records to Kafka and tolerates duplicate publication.
+- Worker service consumes records as the correct consumer groups.
+- Kafka record envelope includes `eventVersion` and required correlation metadata.
+- Tests prove ordering for records sharing a partition key and allow no ordering claim across partitions.
+- Retry tests document and verify the chosen ordering behavior after a failed record leaves its original topic.
+- Independent consumer groups can process the same lifecycle event.
 - Notification simulation runs asynchronously.
-- Failed messages retry.
-- Poison messages reach DLQ.
-- Duplicate SQS messages do not create duplicate side effects.
+- Retriable records pass through retry topics with bounded attempts and backoff.
+- Poison records reach the dead-letter topic with diagnostic metadata.
+- Replayed or duplicate Kafka records do not create duplicate side effects.
 - Admin can inspect outbox event status.
 - Tests cover success, retry, and failure paths.
-- Documentation explains outbox plus SQS flow.
+- Documentation explains the outbox-to-Kafka flow, topic taxonomy, record keys, consumer groups, retention, replay, and delivery guarantees.
 - ADR explains event schema versioning and compatibility strategy.
-- Documentation explains worker graceful shutdown, ECS stop timeout, and SQS visibility-timeout behavior.
+- ADR explains why Kafka was selected over SQS and acknowledges its additional operational cost and complexity.
+- Documentation explains worker graceful shutdown, ECS stop timeout, offset commits, consumer rebalancing, and redelivery behavior.
 
 ---
 
@@ -908,7 +927,7 @@ GET /api/v1/admin/waitlist-promotions
 - First eligible waitlisted user is promoted.
 - Promotion acceptance creates a booking hold.
 - Promotion decline or expiry promotes the next user.
-- Duplicate worker messages do not double-promote users.
+- Replayed or duplicate Kafka records do not double-promote users.
 - Tests cover normal and duplicate-processing paths.
 - Docs include waitlist sequence diagram.
 
@@ -1037,7 +1056,7 @@ Implement:
 - Structured JSON logs.
 - Request correlation ID middleware/filter.
 - Correlation ID propagation into outbox events.
-- Correlation ID propagation into SQS messages.
+- Correlation ID propagation into Kafka record headers and event envelopes.
 - Worker logs include correlation ID.
 - API latency metrics.
 - Booking business metrics.
@@ -1060,8 +1079,11 @@ waitlist_promotions_total
 redis_cache_hits_total
 redis_cache_misses_total
 rate_limit_rejections_total
-sqs_messages_processed_total
-sqs_messages_failed_total
+kafka_records_processed_total
+kafka_records_failed_total
+kafka_consumer_lag
+kafka_records_sent_to_retry_total
+kafka_records_sent_to_dlt_total
 worker_processing_duration_seconds
 outbox_events_published_total
 outbox_events_failed_total
@@ -1095,7 +1117,7 @@ GET /api/v1/admin/system/metrics-summary
 - Grafana dashboard shows worker throughput and failures.
 - Grafana dashboard shows Redis cache behavior.
 - Logs include correlation IDs.
-- A failed async event can be traced through API logs, outbox event, SQS message, and worker logs.
+- A failed async event can be traced through API logs, its outbox event, Kafka topic/partition/offset, retry or dead-letter record, and worker logs.
 - README includes dashboard screenshots.
 - Observability docs explain key metrics.
 
@@ -1148,7 +1170,7 @@ Measure:
 - overbooking count across two or more API replicas
 - cache hit rate
 - worker processing delay
-- queue backlog
+- Kafka consumer lag and partition distribution
 - database CPU or query time if available
 
 Optimization tasks:
@@ -1212,7 +1234,7 @@ By the end of this sprint, you should understand:
 - Task definitions.
 - Application Load Balancer basics.
 - IAM roles and policies.
-- SQS and DLQ provisioning.
+- Amazon MSK Serverless networking, IAM authentication, topics, and dead-letter topic provisioning.
 - CloudWatch logs.
 - Secret management.
 - Cost-controlled deployment and teardown.
@@ -1234,8 +1256,9 @@ Provision with Terraform:
 - Security groups.
 - IAM task execution role.
 - IAM task role.
-- SQS queue.
-- SQS dead-letter queue.
+- Amazon MSK Serverless cluster and VPC connectivity.
+- Kafka topics, retry topics, and dead-letter topics with documented partition counts and retention policies.
+- IAM-based Kafka access for the API and worker task roles.
 - CloudWatch log groups.
 - Secrets Manager or SSM Parameter Store for secrets.
 - Environment variables for Supabase Postgres and Redis configuration.
@@ -1286,8 +1309,9 @@ GET /api/v1/admin/system/metrics-summary
 - API container runs on ECS Fargate.
 - Worker container runs on ECS Fargate.
 - API service is reachable through load balancer.
-- Worker can consume SQS messages.
-- SQS and DLQ are provisioned.
+- Worker can join its Kafka consumer groups and consume records securely.
+- Kafka topics, retry topics, and dead-letter topics are provisioned.
+- MSK Serverless is destroyed after the documented validation run unless continued operation is explicitly desired.
 - Supabase Postgres connection works from deployed service.
 - Logs are visible in CloudWatch.
 - GitHub Actions builds and pushes Docker images.
@@ -1350,7 +1374,7 @@ Include diagrams:
 - Booking state machine.
 - Booking sequence diagram.
 - Payment workflow sequence diagram.
-- Outbox/SQS/worker sequence diagram.
+- Outbox/Kafka/consumer-group sequence diagram.
 - Waitlist promotion sequence diagram.
 - Deployment diagram.
 
@@ -1421,8 +1445,8 @@ If time becomes tight, the minimum version should include:
 - Idempotency keys.
 - Fake payment workflow.
 - Transactional outbox.
-- SQS worker.
-- DLQ.
+- Kafka worker with deliberate topic, partition-key, and consumer-group design.
+- Retry and dead-letter topics.
 - Redis caching.
 - Docker Compose.
 - OpenAPI docs.
@@ -1505,13 +1529,13 @@ These are not necessary for the backend signal.
 Potential project entry:
 
 ```text
-SlotForge - Production-Grade Event Booking Backend | Spring Boot, PostgreSQL, Redis, SQS, Docker, Terraform, AWS ECS Fargate
+SlotForge - Production-Grade Event Booking Backend | Spring Boot, PostgreSQL, Redis, Kafka, Docker, Terraform, AWS ECS Fargate
 
 - Built an API-first event booking backend for scarce-capacity sessions, supporting booking, cancellation, fake payment authorization, waitlists, admin workflows, JWT RBAC, and OpenAPI-documented REST APIs.
 - Implemented a concurrency-safe reservation engine using PostgreSQL transactions, row-level locks, idempotency keys, and explicit booking state transitions to prevent overbooking under concurrent demand.
-- Designed an event-driven worker pipeline with transactional outbox, AWS SQS, retry handling, and DLQ isolation for booking lifecycle events, payment outcomes, notifications, and waitlist promotion.
+- Designed an at-least-once event pipeline with a transactional outbox and Apache Kafka, using keyed partitions, independent consumer groups, idempotent handlers, bounded retry topics, and dead-letter isolation for booking, payment, notification, and waitlist workflows.
 - Added Redis caching and rate limiting for high-demand availability and booking endpoints, with Prometheus/Grafana dashboards tracking p95 latency, cache hit rate, error rate, worker throughput, and failed events.
-- Deployed API and worker containers to AWS ECS Fargate using Terraform and GitHub Actions CI/CD, with Supabase Postgres, ECR, IAM, SQS/DLQ, CloudWatch logs, automated smoke tests, security scans, and a multi-replica load test proving zero overbooking across API replicas.
+- Deployed API and worker containers to AWS ECS Fargate with Terraform and GitHub Actions CI/CD, integrating Supabase Postgres, Amazon MSK Serverless, ECR, IAM, CloudWatch logs, automated smoke tests, security scans, and a multi-replica load test that verified zero overbooking across API replicas.
 ```
 
 ---
