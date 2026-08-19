@@ -15,8 +15,14 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 
 import com.slotforge.api.TestcontainersConfiguration;
+import com.slotforge.api.SecurityTestTokenFactory;
+import com.slotforge.api.SecurityTestTokenFactory.TestIdentity;
 import com.slotforge.api.availability.BookingSlotRepository;
+import com.slotforge.api.security.JwtService;
 import com.slotforge.api.session.EventSessionRepository;
+import com.slotforge.api.user.RoleName;
+import com.slotforge.api.user.RoleRepository;
+import com.slotforge.api.user.UserAccountRepository;
 import com.slotforge.api.venue.VenueRepository;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -46,12 +52,29 @@ class EventApiIntegrationTests {
     @Autowired
     private VenueRepository venueRepository;
 
+    @Autowired
+    private UserAccountRepository userAccountRepository;
+
+    @Autowired
+    private RoleRepository roleRepository;
+
+    @Autowired
+    private JwtService jwtService;
+
+    private TestIdentity organizerIdentity;
+
     @BeforeEach
     void clearDatabase() {
         bookingSlotRepository.deleteAll();
         eventSessionRepository.deleteAll();
         eventRepository.deleteAll();
         venueRepository.deleteAll();
+        organizerIdentity = SecurityTestTokenFactory.createIdentity(
+                RoleName.ORGANIZER,
+                userAccountRepository,
+                roleRepository,
+                jwtService
+        );
     }
 
     @Test
@@ -83,6 +106,10 @@ class EventApiIntegrationTests {
                 savedEvent.getDescription()
         );
         assertEquals(EventStatus.DRAFT, savedEvent.getStatus());
+        assertEquals(
+                organizerIdentity.user().getId(),
+                savedEvent.getOrganizer().getId()
+        );
         assertEquals(0, savedEvent.getVersion());
 
         assertEquals(
@@ -100,6 +127,69 @@ class EventApiIntegrationTests {
         assertTrue(
                 response.body().contains("\"status\":\"DRAFT\"")
         );
+        assertTrue(response.body().contains(
+                "\"organizerId\":\""
+                        + organizerIdentity.user().getId()
+                        + "\""
+        ));
+    }
+
+    @Test
+    void anotherOrganizerCannotUpdateEvent() throws Exception {
+        Event event = eventRepository.saveAndFlush(
+                new Event("Owned Event", null, organizerIdentity.user())
+        );
+        TestIdentity otherOrganizer = SecurityTestTokenFactory.createIdentity(
+                RoleName.ORGANIZER,
+                userAccountRepository,
+                roleRepository,
+                jwtService
+        );
+
+        HttpResponse<String> response = sendJson(
+                "PATCH",
+                "/api/v1/events/" + event.getId(),
+                """
+                { "name": "Unauthorized change" }
+                """,
+                otherOrganizer.accessToken()
+        );
+
+        assertEquals(403, response.statusCode());
+        assertEquals(
+                "Owned Event",
+                eventRepository.findById(event.getId()).orElseThrow().getName()
+        );
+    }
+
+    @Test
+    void adminCanUpdateEventWithoutTakingOwnership() throws Exception {
+        Event event = eventRepository.saveAndFlush(
+                new Event("Owned Event", null, organizerIdentity.user())
+        );
+        TestIdentity admin = SecurityTestTokenFactory.createIdentity(
+                RoleName.ADMIN,
+                userAccountRepository,
+                roleRepository,
+                jwtService
+        );
+
+        HttpResponse<String> response = sendJson(
+                "PATCH",
+                "/api/v1/events/" + event.getId(),
+                """
+                { "name": "Admin change" }
+                """,
+                admin.accessToken()
+        );
+
+        assertEquals(200, response.statusCode());
+        Event updated = eventRepository.findById(event.getId()).orElseThrow();
+        assertEquals("Admin change", updated.getName());
+        assertEquals(
+                organizerIdentity.user().getId(),
+                updated.getOrganizer().getId()
+        );
     }
 
     @Test
@@ -107,7 +197,8 @@ class EventApiIntegrationTests {
         Event savedEvent = eventRepository.saveAndFlush(
                 new Event(
                         "Retrieved Event",
-                        "Retrieved through the API"
+                        "Retrieved through the API",
+                        organizerIdentity.user()
                 )
         );
 
@@ -133,12 +224,17 @@ class EventApiIntegrationTests {
             throws Exception {
 
         Event draftEvent = eventRepository.saveAndFlush(
-                new Event("Draft Event", null)
+                new Event(
+                        "Draft Event",
+                        null,
+                        organizerIdentity.user()
+                )
         );
 
         Event publishedEvent = new Event(
                 "Published Event",
-                null
+                null,
+                organizerIdentity.user()
         );
         publishedEvent.changeStatus(EventStatus.PUBLISHED);
         publishedEvent = eventRepository.saveAndFlush(publishedEvent);
@@ -178,7 +274,8 @@ class EventApiIntegrationTests {
         Event savedEvent = eventRepository.saveAndFlush(
                 new Event(
                         "Original Name",
-                        "Original description"
+                        "Original description",
+                        organizerIdentity.user()
                 )
         );
 
@@ -303,10 +400,28 @@ class EventApiIntegrationTests {
             String path,
             String body
     ) throws Exception {
+        return sendJson(
+                method,
+                path,
+                body,
+                organizerIdentity.accessToken()
+        );
+    }
+
+    private HttpResponse<String> sendJson(
+            String method,
+            String path,
+            String body,
+            String accessToken
+    ) throws Exception {
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(uri(path))
                 .header("Content-Type", "application/json")
+                .header(
+                        "Authorization",
+                        "Bearer " + accessToken
+                )
                 .method(
                         method,
                         HttpRequest.BodyPublishers.ofString(body)

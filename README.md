@@ -100,6 +100,20 @@ Wait until the API, worker, PostgreSQL, and Redis health checks report healthy.
 
 Default local Grafana credentials are documented in `.env.example`. They must not be used outside local development.
 
+## Browser access and API authentication
+
+The API accepts cross-origin browser requests only from the exact origins in
+`CORS_ALLOWED_ORIGINS` (comma-separated). The local default is
+`http://localhost:5173`. CORS permits the `Authorization`, `Content-Type`, and
+`X-Correlation-ID` request headers and exposes `Location` and
+`X-Correlation-ID` response headers. Credentialed cookie requests are disabled
+because SlotForge currently returns access and refresh tokens in JSON.
+
+To call a protected operation in Swagger UI, log in through
+`POST /api/v1/auth/login`, copy the returned access token, select **Authorize**,
+and enter the token. Swagger adds the `Bearer` authorization scheme; Spring
+Security performs the actual JWT validation and authorization.
+
 ## Running Without Docker
 
 Run the API:
@@ -124,6 +138,31 @@ docker compose up -d postgres
 ```
 
 Datasource settings can be overridden with `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD`.
+
+## Dependency vulnerability scanning
+
+Run the aggregate OWASP Dependency-Check scan locally with:
+
+```bash
+./gradlew dependencyCheckAggregate
+```
+
+HTML and JSON reports are written to `build/reports/dependency-check/`. The
+build fails when a dependency has a known vulnerability with a CVSS score of
+7.0 or higher. For local scans, a future NVD key can be supplied with
+`ORG_GRADLE_PROJECT_nvdApiKey`. Never store the key in `.env` or source control.
+
+CI uploads the reports even when the scan fails. Treat findings as inputs for
+investigation: confirm the affected code is reachable, identify whether the
+dependency is direct or transitive, and prefer upgrading it. Suppress only a
+documented, verified false positive.
+
+### Open security-tooling point
+
+- Obtain an NVD API key and add secure CI secret wiring. CI currently uses the
+  anonymous NVD API, so a cold vulnerability-database download is slower and
+  more susceptible to public rate limits. This does not disable scanning or
+  lower the CVSS failure threshold.
 
 ## Sprint 1 API Examples
 

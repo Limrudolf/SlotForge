@@ -10,6 +10,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -18,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 )
 @Import(TestcontainersConfiguration.class)
 class OpenApiIntegrationTests {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @LocalServerPort
     private int port;
@@ -61,6 +66,9 @@ class OpenApiIntegrationTests {
                 document,
                 "/api/v1/sessions/{sessionId}/availability"
         );
+        assertPathExists(document, "/api/v1/auth/login");
+        assertPathExists(document, "/api/v1/me");
+        assertPathExists(document, "/api/v1/admin/audit-logs");
 
         assertTrue(document.contains("\"summary\":\"Create an event\""));
         assertTrue(document.contains(
@@ -74,6 +82,31 @@ class OpenApiIntegrationTests {
         assertTrue(document.contains("\"404\""));
         assertTrue(document.contains("\"409\""));
         assertTrue(document.contains("\"ApiError\""));
+
+        JsonNode root = objectMapper.readTree(document);
+        JsonNode scheme = root.at(
+                "/components/securitySchemes/bearerAuth"
+        );
+        assertEquals("http", scheme.path("type").asText());
+        assertEquals("bearer", scheme.path("scheme").asText());
+        assertEquals("JWT", scheme.path("bearerFormat").asText());
+
+        assertBearerProtected(root, "/api/v1/events", "post");
+        assertBearerProtected(
+                root,
+                "/api/v1/events/{eventId}",
+                "patch"
+        );
+        assertBearerProtected(root, "/api/v1/me", "get");
+        assertBearerProtected(
+                root,
+                "/api/v1/admin/audit-logs",
+                "get"
+        );
+        assertTrue(root.at("/paths/~1api~1v1~1events/get/security")
+                .isMissingNode());
+        assertTrue(root.at("/paths/~1api~1v1~1auth~1login/post/security")
+                .isMissingNode());
     }
 
     private void assertPathExists(String document, String path) {
@@ -81,5 +114,18 @@ class OpenApiIntegrationTests {
                 document.contains("\"" + path + "\""),
                 () -> "OpenAPI path is missing: " + path
         );
+    }
+
+    private void assertBearerProtected(
+            JsonNode root,
+            String path,
+            String method
+    ) {
+        String pointerPath = path.replace("~", "~0").replace("/", "~1");
+        JsonNode security = root.at(
+                "/paths/" + pointerPath + "/" + method + "/security"
+        );
+        assertTrue(security.isArray() && !security.isEmpty());
+        assertTrue(security.get(0).has("bearerAuth"));
     }
 }

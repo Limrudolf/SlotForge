@@ -6,13 +6,18 @@ import java.util.UUID;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
+import com.slotforge.api.user.UserAccount;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
@@ -34,6 +39,10 @@ public class Event {
     @Column(name = "status", nullable = false, length = 30)
     private EventStatus status;
 
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "organizer_id", nullable = false)
+    private UserAccount organizer;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -50,9 +59,14 @@ public class Event {
         // Required by JPA.
     }
 
-    public Event(String name, String description) {
+    public Event(
+            String name,
+            String description,
+            UserAccount organizer
+    ) {
         this.name = name;
         this.description = description;
+        this.organizer = organizer;
         this.status = EventStatus.DRAFT;
     }
 
@@ -79,6 +93,14 @@ public class Event {
 
     public EventStatus getStatus() {
         return status;
+    }
+
+    public boolean isOwnedBy(UUID userId) {
+        return organizer.getId().equals(userId);
+    }
+
+    public UserAccount getOrganizer() {
+        return organizer;
     }
 
     public Instant getCreatedAt() {

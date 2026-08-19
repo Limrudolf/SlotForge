@@ -17,10 +17,16 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 
 import com.slotforge.api.TestcontainersConfiguration;
+import com.slotforge.api.SecurityTestTokenFactory;
+import com.slotforge.api.SecurityTestTokenFactory.TestIdentity;
 import com.slotforge.api.availability.BookingSlot;
 import com.slotforge.api.availability.BookingSlotRepository;
 import com.slotforge.api.event.Event;
 import com.slotforge.api.event.EventRepository;
+import com.slotforge.api.security.JwtService;
+import com.slotforge.api.user.RoleName;
+import com.slotforge.api.user.RoleRepository;
+import com.slotforge.api.user.UserAccountRepository;
 import com.slotforge.api.venue.Venue;
 import com.slotforge.api.venue.VenueRepository;
 
@@ -51,12 +57,29 @@ class SessionApiIntegrationTests {
     @Autowired
     private VenueRepository venueRepository;
 
+    @Autowired
+    private UserAccountRepository userAccountRepository;
+
+    @Autowired
+    private RoleRepository roleRepository;
+
+    @Autowired
+    private JwtService jwtService;
+
+    private TestIdentity organizerIdentity;
+
     @BeforeEach
     void clearDatabase() {
         bookingSlotRepository.deleteAll();
         eventSessionRepository.deleteAll();
         eventRepository.deleteAll();
         venueRepository.deleteAll();
+        organizerIdentity = SecurityTestTokenFactory.createIdentity(
+                RoleName.ORGANIZER,
+                userAccountRepository,
+                roleRepository,
+                jwtService
+        );
     }
 
     @Test
@@ -136,6 +159,63 @@ class SessionApiIntegrationTests {
         assertTrue(availabilityResponse.body().contains(
                 "\"remainingCapacity\":500"
         ));
+    }
+
+    @Test
+    void anotherOrganizerCannotCreateSessionForEvent() throws Exception {
+        TestFixtures fixtures = createFixtures();
+        TestIdentity otherOrganizer = SecurityTestTokenFactory.createIdentity(
+                RoleName.ORGANIZER,
+                userAccountRepository,
+                roleRepository,
+                jwtService
+        );
+
+        HttpResponse<String> response = sendJson(
+                "POST",
+                sessionCreationPath(fixtures.event().getId()),
+                sessionJson(
+                        fixtures.venue().getId(),
+                        "2026-10-10T19:00:00+02:00",
+                        "2026-10-10T22:00:00+02:00",
+                        "Europe/Stockholm",
+                        500
+                ),
+                otherOrganizer.accessToken()
+        );
+
+        assertEquals(403, response.statusCode());
+        assertEquals(0, eventSessionRepository.count());
+        assertEquals(0, bookingSlotRepository.count());
+    }
+
+    @Test
+    void adminCanCreateSessionForAnotherOrganizersEvent()
+            throws Exception {
+        TestFixtures fixtures = createFixtures();
+        TestIdentity admin = SecurityTestTokenFactory.createIdentity(
+                RoleName.ADMIN,
+                userAccountRepository,
+                roleRepository,
+                jwtService
+        );
+
+        HttpResponse<String> response = sendJson(
+                "POST",
+                sessionCreationPath(fixtures.event().getId()),
+                sessionJson(
+                        fixtures.venue().getId(),
+                        "2026-10-10T19:00:00+02:00",
+                        "2026-10-10T22:00:00+02:00",
+                        "Europe/Stockholm",
+                        500
+                ),
+                admin.accessToken()
+        );
+
+        assertEquals(201, response.statusCode());
+        assertEquals(1, eventSessionRepository.count());
+        assertEquals(1, bookingSlotRepository.count());
     }
 
     @Test
@@ -382,7 +462,11 @@ class SessionApiIntegrationTests {
             throws Exception {
 
         Event emptyEvent = eventRepository.saveAndFlush(
-                new Event("Empty Event", null)
+                new Event(
+                        "Empty Event",
+                        null,
+                        organizerIdentity.user()
+                )
         );
         UUID missingId = UUID.fromString(
                 "00000000-0000-0000-0000-000000000000"
@@ -409,7 +493,11 @@ class SessionApiIntegrationTests {
 
     private TestFixtures createFixtures() {
         Event event = eventRepository.saveAndFlush(
-                new Event("Session Test Event", null)
+                new Event(
+                        "Session Test Event",
+                        null,
+                        organizerIdentity.user()
+                )
         );
 
         Venue venue = venueRepository.saveAndFlush(
@@ -492,9 +580,27 @@ class SessionApiIntegrationTests {
             String path,
             String body
     ) throws Exception {
+        return sendJson(
+                method,
+                path,
+                body,
+                organizerIdentity.accessToken()
+        );
+    }
+
+    private HttpResponse<String> sendJson(
+            String method,
+            String path,
+            String body,
+            String accessToken
+    ) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(uri(path))
                 .header("Content-Type", "application/json")
+                .header(
+                        "Authorization",
+                        "Bearer " + accessToken
+                )
                 .method(
                         method,
                         HttpRequest.BodyPublishers.ofString(body)

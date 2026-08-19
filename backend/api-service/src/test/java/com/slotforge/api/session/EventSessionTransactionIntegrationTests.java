@@ -15,10 +15,16 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import com.slotforge.api.TestcontainersConfiguration;
+import com.slotforge.api.SecurityTestTokenFactory;
+import com.slotforge.api.SecurityTestTokenFactory.TestIdentity;
 import com.slotforge.api.availability.BookingSlot;
 import com.slotforge.api.availability.BookingSlotRepository;
 import com.slotforge.api.event.Event;
 import com.slotforge.api.event.EventRepository;
+import com.slotforge.api.security.JwtService;
+import com.slotforge.api.user.RoleName;
+import com.slotforge.api.user.RoleRepository;
+import com.slotforge.api.user.UserAccountRepository;
 import com.slotforge.api.venue.Venue;
 import com.slotforge.api.venue.VenueRepository;
 
@@ -49,11 +55,28 @@ class EventSessionTransactionIntegrationTests {
     @Autowired
     private VenueRepository venueRepository;
 
+    @Autowired
+    private UserAccountRepository userAccountRepository;
+
+    @Autowired
+    private RoleRepository roleRepository;
+
+    @Autowired
+    private JwtService jwtService;
+
+    private TestIdentity organizerIdentity;
+
     @BeforeEach
     void clearDatabase() {
         eventSessionRepository.deleteAll();
         eventRepository.deleteAll();
         venueRepository.deleteAll();
+        organizerIdentity = SecurityTestTokenFactory.createIdentity(
+                RoleName.ORGANIZER,
+                userAccountRepository,
+                roleRepository,
+                jwtService
+        );
     }
 
     @Test
@@ -61,7 +84,11 @@ class EventSessionTransactionIntegrationTests {
             throws Exception {
 
         Event event = eventRepository.saveAndFlush(
-                new Event("Rollback Test Event", null)
+                new Event(
+                        "Rollback Test Event",
+                        null,
+                        organizerIdentity.user()
+                )
         );
         Venue venue = venueRepository.saveAndFlush(
                 new Venue(
@@ -89,6 +116,10 @@ class EventSessionTransactionIntegrationTests {
                                 + "/sessions"
                 ))
                 .header("Content-Type", "application/json")
+                .header(
+                        "Authorization",
+                        "Bearer " + organizerIdentity.accessToken()
+                )
                 .POST(HttpRequest.BodyPublishers.ofString(
                         """
                         {

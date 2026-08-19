@@ -106,3 +106,54 @@
 - **Q:** Why return DTOs rather than JPA entities from controllers?
 
   **A:** Returning entities couples the public contract to persistence, risks exposing internal fields, and can trigger lazy-loading or recursive-serialization failures. SlotForge maps entities to explicit response records inside service transactions, keeping HTTP schemas stable while the database model evolves.
+
+# Sprint 2: Spring Security, JWT Authentication, and RBAC
+## Topic: Stateless Authentication, Refresh-Token Rotation, and Layered Authorization
+### Key Design Considerations
+- Spring Security owns HTTP authentication and coarse role checks. The resource-server filter validates the JWT signature, issuer, and expiry before controllers execute, then maps the token's role claim to `ROLE_*` authorities.
+- Access tokens are short-lived signed JWTs. They carry the user UUID in `sub` and roles as readable claims; they are signed, not encrypted. Services still load security-sensitive account state where current database state matters.
+- Passwords use adaptive BCrypt through Spring's delegating password encoder. Unlike a fast general-purpose hash, BCrypt includes salts and a configurable work factor to make offline password guessing expensive.
+- Refresh tokens are opaque high-entropy secrets. Only SHA-256 token fingerprints are stored because generated refresh tokens already have strong entropy and require fast exact lookup; BCrypt would prevent indexed lookup and add little protection against brute force for random 256-bit values.
+- Refresh tokens rotate on every successful refresh. A pessimistic database lock serializes concurrent use of the same token. Reuse of an already rotated token is treated as theft and revokes the active token family.
+- Logout revokes the refresh-token family but cannot recall already-issued stateless access tokens. Their short lifetime bounds the remaining exposure; immediate access-token revocation would require server-side denylisting or a different session model.
+- URL authorization protects broad role boundaries, while event ownership is enforced in the service layer after loading the resource. Ownership depends on domain data and cannot be decided reliably from the URL or JWT alone. Admins bypass ownership checks without becoming owners.
+- Event ownership is mandatory in PostgreSQL and JPA. A migration assigns legacy ownerless rows to a disabled placeholder organizer before applying `NOT NULL`, preserving existing data while making future ownership unambiguous.
+- Audit entries for event creation, event updates, and session creation are inserted in the same database transaction as the mutation. A failed audit insert rolls back the business change, prioritizing a complete security trail over mutation availability.
+- A request correlation UUID is accepted only in canonical UUID form or generated server-side, propagated in `X-Correlation-ID`, placed in MDC, and stored with audit rows. It supports tracing but is neither authentication nor idempotency.
+- CORS uses an exact configurable origin allowlist, explicit methods and headers, and no credentialed cookies. CORS is a browser policy rather than an authentication boundary; non-browser clients can still call the API and must be controlled by JWT authorization.
+- Access and refresh tokens currently travel in JSON, documenting a bearer-token client model. A browser-focused production client should revisit storing refresh tokens in `HttpOnly`, `Secure`, appropriately scoped cookies and then deliberately revise CSRF and credentialed-CORS controls.
+- OpenAPI defines a reusable JWT bearer scheme and marks protected operations individually, avoiding the inaccurate implication that public reads and authentication endpoints require access tokens.
+- OWASP Dependency-Check scans the aggregate Gradle build, emits HTML and JSON reports, and fails for CVSS scores of 7.0 or higher. Reports upload even on failure. The remaining tooling open point is adding an NVD API key to reduce cold-download time and public rate-limit exposure.
+- Customer booking ownership is intentionally deferred to Sprint 3 because booking resources do not exist yet. Sprint 2 establishes the reusable authenticated-user and authorization foundations that booking services will apply.
+### Potential Interview Questions
+- **Q:** What exactly does Spring Security validate in a SlotForge access token?
+
+  **A:** The resource server decodes the three JWT segments, recomputes the HMAC signature over the encoded header and payload using the configured server secret, and rejects a mismatch. It also validates issuer and expiry. After validation, the `sub` claim becomes the user identity and the roles claim is converted into Spring authorities. Claims are readable and therefore must never contain secrets.
+
+- **Q:** Why are access tokens JWTs while refresh tokens are opaque database-backed values?
+
+  **A:** Access tokens are presented frequently, so local signature validation avoids a database lookup on every API call and keeps authorization scalable. Refresh tokens are presented only to authentication endpoints and need rotation, revocation, family tracking, and reuse detection, all of which require server-side state. Using an opaque random refresh token exposes no claims and allows the stored fingerprint to be revoked centrally.
+
+- **Q:** What happens if two requests concurrently present the same refresh token?
+
+  **A:** The repository locks the refresh-token row with `SELECT FOR UPDATE`. One transaction rotates it and commits first. The second then observes that the token was already rotated, treats the presentation as reuse, and revokes the remaining active family. This conservative response may force a legitimate client to log in again, but it prevents an attacker and legitimate client from continuing with different descendants of a stolen token.
+
+- **Q:** Why not store refresh tokens with BCrypt like passwords?
+
+  **A:** Passwords have low human-selected entropy, so an adaptive slow hash is essential against offline guessing. SlotForge refresh tokens are uniformly random high-entropy values, making brute force infeasible even with fast SHA-256. Their hash must also support deterministic indexed lookup when the presented token arrives. BCrypt uses a random salt and is intentionally slow, so it is unsuitable for that lookup pattern.
+
+- **Q:** Why can ownership not be enforced entirely in the Spring Security filter chain?
+
+  **A:** The filter chain can determine that a valid organizer made the request, but it does not know which user owns a particular event without loading domain state. The event service loads the event inside the transaction and compares its organizer UUID with the authenticated JWT subject. Keeping this check next to the mutation avoids controller-only protection that could be bypassed by another caller of the service.
+
+- **Q:** Why write audit logs in the same transaction as the mutation?
+
+  **A:** SlotForge treats the audit record as required security data. A single transaction guarantees that the mutation and audit entry either both commit or both roll back, preventing successful sensitive changes with missing audit history. The trade-off is tighter availability coupling: an audit persistence failure rejects the business operation. A future asynchronous design would require a transactional outbox, not a best-effort message after commit.
+
+- **Q:** Does CORS stop attackers from calling the API?
+
+  **A:** No. CORS tells conforming browsers whether JavaScript from one origin may read or send certain cross-origin requests. Curl, mobile applications, backend services, and malicious servers do not rely on browser CORS enforcement. SlotForge therefore uses CORS as a browser boundary and JWT authentication, role checks, and ownership checks as the actual access-control boundary.
+
+- **Q:** Why does logout not immediately invalidate an access token?
+
+  **A:** Access tokens are self-contained and validated without server-side session state. Logout revokes the refresh-token family, preventing future access tokens, but an existing access token remains valid until its short expiry. Immediate invalidation would require checking a denylist or session version on requests, trading away some statelessness and adding shared-state availability and cleanup concerns.

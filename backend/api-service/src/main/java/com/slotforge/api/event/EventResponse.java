@@ -8,6 +8,7 @@ public record EventResponse(
         String name,
         String description,
         EventStatus status,
+        UUID organizerId,
         Instant createdAt,
         Instant updatedAt,
         long version
@@ -19,6 +20,7 @@ public record EventResponse(
                 event.getName(),
                 event.getDescription(),
                 event.getStatus(),
+                event.getOrganizer().getId(),
                 event.getCreatedAt(),
                 event.getUpdatedAt(),
                 event.getVersion()

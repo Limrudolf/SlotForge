@@ -9,13 +9,19 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.slotforge.api.audit.AuditAction;
+import com.slotforge.api.audit.AuditEntityType;
+import com.slotforge.api.audit.AuditService;
 import com.slotforge.api.availability.AvailabilityResponse;
 import com.slotforge.api.availability.BookingSlot;
 import com.slotforge.api.availability.BookingSlotRepository;
 import com.slotforge.api.common.PageResponse;
 import com.slotforge.api.event.Event;
+import com.slotforge.api.event.EventAuthorizationService;
 import com.slotforge.api.event.EventNotFoundException;
 import com.slotforge.api.event.EventRepository;
+import com.slotforge.api.security.CurrentActor;
+import com.slotforge.api.security.CurrentActorProvider;
 import com.slotforge.api.venue.Venue;
 import com.slotforge.api.venue.VenueNotFoundException;
 import com.slotforge.api.venue.VenueRepository;
@@ -27,17 +33,26 @@ public class EventSessionService {
     private final VenueRepository venueRepository;
     private final EventSessionRepository eventSessionRepository;
     private final BookingSlotRepository bookingSlotRepository;
+    private final CurrentActorProvider currentActorProvider;
+    private final EventAuthorizationService eventAuthorizationService;
+    private final AuditService auditService;
 
     public EventSessionService(
             EventRepository eventRepository,
             VenueRepository venueRepository,
             EventSessionRepository eventSessionRepository,
-            BookingSlotRepository bookingSlotRepository
+            BookingSlotRepository bookingSlotRepository,
+            CurrentActorProvider currentActorProvider,
+            EventAuthorizationService eventAuthorizationService,
+            AuditService auditService
     ) {
         this.eventRepository = eventRepository;
         this.venueRepository = venueRepository;
         this.eventSessionRepository = eventSessionRepository;
         this.bookingSlotRepository = bookingSlotRepository;
+        this.currentActorProvider = currentActorProvider;
+        this.eventAuthorizationService = eventAuthorizationService;
+        this.auditService = auditService;
     }
 
     @Transactional
@@ -46,6 +61,8 @@ public class EventSessionService {
             CreateEventSessionRequest request
     ) {
         Event event = findEvent(eventId);
+        CurrentActor actor = currentActorProvider.currentActor();
+        eventAuthorizationService.requireOwnerOrAdmin(event, actor);
         Venue venue = findVenue(request.venueId());
 
         String displayTimezone = ZoneId
@@ -69,6 +86,20 @@ public class EventSessionService {
 
         bookingSlotRepository.save(bookingSlot);
         bookingSlotRepository.flush();
+
+        auditService.record(
+                actor,
+                AuditAction.EVENT_SESSION_CREATED,
+                AuditEntityType.EVENT_SESSION,
+                session.getId(),
+                java.util.Map.of(
+                        "eventId", event.getId().toString(),
+                        "venueId", venue.getId().toString(),
+                        "startTimeUtc", session.getStartTimeUtc().toString(),
+                        "endTimeUtc", session.getEndTimeUtc().toString(),
+                        "totalCapacity", request.totalCapacity()
+                )
+        );
 
         return EventSessionResponse.from(session);
     }

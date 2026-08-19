@@ -18,8 +18,13 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 
+import com.slotforge.api.auth.EmailAlreadyRegisteredException;
+import com.slotforge.api.auth.InvalidCredentialsException;
 import com.slotforge.api.event.EventNotFoundException;
+import com.slotforge.api.event.EventOwnershipException;
+import com.slotforge.api.refreshtoken.InvalidRefreshTokenException;
 import com.slotforge.api.session.EventSessionNotFoundException;
+import com.slotforge.api.user.AuthenticatedAccountUnavailableException;
 import com.slotforge.api.venue.VenueNotFoundException;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -148,6 +153,71 @@ public class GlobalExceptionHandler {
         return buildResponse(
                 HttpStatus.CONFLICT,
                 "The resource was modified by another request",
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(EmailAlreadyRegisteredException.class)
+    public ResponseEntity<ApiError> handleEmailAlreadyRegistered(
+            EmailAlreadyRegisteredException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(InvalidCredentialsException.class)
+    public ResponseEntity<ApiError> handleInvalidCredentials(
+            InvalidCredentialsException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.UNAUTHORIZED,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(AuthenticatedAccountUnavailableException.class)
+    public ResponseEntity<ApiError> handleUnavailableAuthenticatedAccount(
+            AuthenticatedAccountUnavailableException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.UNAUTHORIZED,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(InvalidRefreshTokenException.class)
+    public ResponseEntity<ApiError> handleInvalidRefreshToken(
+            InvalidRefreshTokenException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.UNAUTHORIZED,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(EventOwnershipException.class)
+    public ResponseEntity<ApiError> handleEventOwnership(
+            EventOwnershipException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.FORBIDDEN,
+                exception.getMessage(),
                 request.getRequestURI(),
                 List.of()
         );

@@ -1,6 +1,7 @@
 plugins {
     id 'base'
     id 'org.springframework.boot' version '4.1.0' apply false
+    id 'org.owasp.dependencycheck' version '12.2.2'
 }
 
 allprojects {
@@ -19,5 +20,23 @@ subprojects {
 
     tasks.withType(Test).configureEach {
         useJUnitPlatform()
+    }
+}
+
+dependencyCheck {
+    failBuildOnCVSS = 7.0
+    failOnError = true
+    formats = ['HTML', 'JSON']
+    outputDirectory = layout.buildDirectory
+            .dir('reports/dependency-check')
+            .get()
+            .asFile
+            .path
+
+    def nvdApiKey = providers.gradleProperty('nvdApiKey').orNull
+    if (nvdApiKey) {
+        nvd {
+            apiKey = nvdApiKey
+        }
     }
 }

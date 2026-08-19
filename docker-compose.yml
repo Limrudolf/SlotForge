@@ -48,6 +48,8 @@ services:
       DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
       DATABASE_USERNAME: ${POSTGRES_USER}
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      CORS_MAX_AGE: ${CORS_MAX_AGE:-1h}
     ports:
       - "${API_PORT:-8080}:8080"
     depends_on:
