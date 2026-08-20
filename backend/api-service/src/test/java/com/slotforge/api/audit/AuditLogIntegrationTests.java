@@ -113,7 +113,9 @@ class AuditLogIntegrationTests {
                   "startTime": "2026-10-10T19:00:00+02:00",
                   "endTime": "2026-10-10T22:00:00+02:00",
                   "displayTimezone": "Europe/Stockholm",
-                  "totalCapacity": 500
+                  "totalCapacity": 500,
+                  "unitPriceMinor": 10000,
+                  "currency": "SEK"
                 }
                 """.formatted(venue.getId()),
                 organizer.accessToken(),

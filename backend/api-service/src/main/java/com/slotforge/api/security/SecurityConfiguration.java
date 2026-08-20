@@ -61,6 +61,21 @@ public class SecurityConfiguration {
                                 HttpMethod.PATCH,
                                 "/api/v1/events/*"
                         ).hasAnyRole("ORGANIZER", "ADMIN")
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/sessions/*/bookings"
+                        ).hasRole("CUSTOMER")
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/bookings/*/cancel"
+                        ).hasRole("CUSTOMER")
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/bookings/*/payment-intent"
+                        ).hasRole("CUSTOMER")
+                        .requestMatchers(
+                                "/api/v1/fake-payments/**"
+                        ).hasRole("ADMIN")
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(exceptions -> exceptions

@@ -1,6 +1,8 @@
 package com.slotforge.api.session;
 
 import java.time.OffsetDateTime;
+import java.util.Currency;
+import java.util.Locale;
 import java.util.UUID;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
@@ -32,7 +34,13 @@ public record CreateEventSessionRequest(
         String displayTimezone,
 
         @Positive(message = "Total capacity must be greater than zero")
-        int totalCapacity
+        int totalCapacity,
+
+        @Positive(message = "Unit price must be greater than zero")
+        long unitPriceMinor,
+
+        @NotBlank(message = "Currency is required")
+        String currency
 ) {
 
     @JsonIgnore
@@ -43,5 +51,21 @@ public record CreateEventSessionRequest(
         }
 
         return endTime.toInstant().isAfter(startTime.toInstant());
+    }
+
+    @JsonIgnore
+    @AssertTrue(message = "Currency must be a recognized ISO 4217 code")
+    public boolean isCurrencySupported() {
+        if (currency == null || currency.isBlank()) {
+            return true;
+        }
+        try {
+            Currency.getInstance(
+                    currency.trim().toUpperCase(Locale.ROOT)
+            );
+            return true;
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 }

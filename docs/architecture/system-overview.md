@@ -2,36 +2,74 @@
 
 ## Purpose
 
-SlotForge is an API-first event-booking backend designed to make scarce-resource reservations safe under concurrent demand.
+SlotForge is an API-first event-booking backend designed to make scarce-resource
+reservations safe under concurrent demand. It uses a modular monolith for
+synchronous domain behavior and a separately deployable worker for future
+asynchronous workflows.
 
-The architecture begins as a modular monolith with a separate worker process. This keeps synchronous domain behavior cohesive while establishing a real process boundary for asynchronous work.
-
-## Current Sprint 0 Topology
+## Current Sprint 3 Topology
 
 ```mermaid
 flowchart LR
-    Client[Client or API Consumer] -->|HTTP| API[Spring Boot API Service]
+    Client[Client, Postman, or Swagger UI] -->|REST + JWT| API[Spring Boot API Service]
+
+    subgraph APIProcess[Current Modular Monolith]
+        Auth[Auth and RBAC]
+        Events[Events, Venues, Sessions]
+        Availability[Capacity and Availability]
+        Booking[Bookings, Idempotency, State History]
+        Audit[Audit Logging]
+    end
+
+    API --> APIProcess
+    APIProcess -->|Transactions and row locks| PostgreSQL[(PostgreSQL)]
 
     Prometheus[Prometheus] -->|Scrapes metrics| API
-    Prometheus -->|Scrapes metrics| Worker[Spring Boot Worker Service]
+    Prometheus -->|Scrapes metrics| Worker[Worker Service Shell]
     Grafana[Grafana] -->|PromQL queries| Prometheus
 
-    API -. Future persistence .-> PostgreSQL[(PostgreSQL)]
-    Worker -. Future persistence .-> PostgreSQL
-
-    API -. Future shared state .-> Redis[(Redis)]
-    Worker -. Future shared state .-> Redis
+    APIProcess -. Sprint 7 cache and rate limits .-> Redis[(Redis)]
+    APIProcess -. Sprint 5 outbox records .-> Kafka[Apache Kafka]
+    Kafka -. Sprint 5 consumption .-> Worker
+    Worker -. Future async state .-> PostgreSQL
 ```
 
-During Sprint 0:
+Solid arrows describe implemented behavior. Dashed arrows are provisioned or
+planned integrations whose application workflows have not yet been implemented.
 
-- The API and worker are independently runnable Spring Boot applications.
-- Both expose health, information, and Prometheus metrics endpoints.
-- PostgreSQL and Redis are provisioned locally but are not yet consumed by application code.
-- Prometheus scrapes metrics from both Spring Boot services.
-- Grafana uses Prometheus as its automatically provisioned datasource.
+At Sprint 3:
 
-Dashed lines represent planned integrations rather than currently implemented application behavior.
+- PostgreSQL stores identity, refresh tokens, events, sessions, capacity,
+  bookings, allocations, state transitions, idempotency records, and audit logs.
+- The API performs JWT authentication, RBAC, ownership checks, concurrency-safe
+  booking, idempotent retry handling, and atomic cancellation.
+- Redis is locally provisioned but is not an application correctness dependency.
+- The worker is independently runnable but does not yet consume Kafka records.
+- Kafka and the transactional outbox begin in Sprint 5.
+
+## Current Synchronous Booking Path
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as API Service
+    participant P as PostgreSQL
+
+    C->>A: POST booking + JWT + Idempotency-Key
+    A->>P: Check completed idempotency result
+    A->>P: SELECT booking_slots FOR UPDATE
+    P-->>A: Exclusive row lock and current capacity
+    A->>P: Recheck idempotency result
+    A->>P: Decrement capacity and insert booking aggregate
+    A->>P: Insert transition and idempotency result
+    A->>P: COMMIT
+    P-->>A: Release capacity lock
+    A-->>C: 201 new booking or 200 replay
+```
+
+PostgreSQL is the concurrency boundary. No booking correctness guarantee relies
+on an in-process Java lock, so the design can later be validated across multiple
+API replicas.
 
 ## Target Architecture
 
@@ -53,11 +91,13 @@ flowchart LR
     API --> APIProcess
     APIProcess --> PostgreSQL[(PostgreSQL)]
     APIProcess --> Redis[(Redis)]
-    APIProcess -->|Transactional outbox events| SQS[AWS SQS]
+    APIProcess -->|Keyed versioned records| Kafka[Kafka locally / MSK Serverless]
 
-    SQS --> Worker[Worker Service]
+    Kafka --> Worker[Worker Service]
     Worker --> PostgreSQL
-    Worker -->|Failed messages| DLQ[AWS SQS DLQ]
+    Kafka --> Retry[Bounded Retry Topics]
+    Retry --> Worker
+    Kafka --> DLT[Dead-Letter Topics]
 
     Prometheus[Prometheus] -->|Scrapes| API
     Prometheus -->|Scrapes| Worker
@@ -68,79 +108,86 @@ flowchart LR
 
 ### API service
 
-The API service owns synchronous, user-facing behavior:
+The API service owns synchronous, user-facing and transactional behavior:
 
-- Authentication and authorization
-- Event and session management
-- Availability queries
-- Booking creation and cancellation
-- Payment initiation
-- Waitlist operations
-- Administrative APIs
-- Transactional domain changes
-
-The API service will organize these capabilities as internal modules rather than independently deployed microservices.
+- Registration, login, refresh-token rotation, logout, JWT validation, and RBAC
+- Event, venue, session, and availability APIs
+- Booking creation, retrieval, listing, transition history, and cancellation
+- Pessimistic scarce-capacity decisions
+- Client-request idempotency and concurrent duplicate recovery
+- Ownership checks and sensitive-action auditing
+- Future payment, waitlist, and transactional-outbox writes
 
 ### Worker service
 
-The worker service will own asynchronous processing:
+The worker service will own asynchronous processing beginning in Sprint 5:
 
-- Publishing transactional outbox events
-- Booking expiration
-- Notifications
+- Outbox publication to Kafka
+- Notification simulation
+- Payment-event processing
 - Waitlist promotion
-- Payment-event handling
-- Retry and dead-letter queue behavior
+- Retry and dead-letter handling
+- Idempotent event consumption
 
-Message handlers must eventually be idempotent because queue delivery can occur more than once.
+Booking expiry will use a database-backed scheduler over persisted expiry
+timestamps rather than treating Kafka as a delayed-message scheduler.
 
 ### Shared module
 
-The shared module is limited to stable cross-process concerns:
+The shared module is reserved for stable cross-process contracts and small
+utilities. It must not contain controllers, repositories, or API-service domain
+implementation. Event envelopes will include identifiers, type, version,
+timestamp, correlation metadata, aggregate identity, and payload.
 
-- Event envelope definitions
-- Event payload contracts
-- Shared identifiers
-- Small utilities with no service-specific behavior
+## Communication and Consistency
 
-It must not contain controllers, repositories, or unrelated business logic. Keeping this module narrow reduces coupling between the API and worker.
+Clients use synchronous REST. PostgreSQL transactions provide atomicity for
+current domain changes. Booking capacity uses a pessimistic row lock; booking
+cancellation combines optimistic booking-state detection with pessimistic shared
+capacity locking.
 
-## Communication Model
-
-Synchronous client operations use REST.
-
-Asynchronous workflows will use versioned events through AWS SQS. The transactional outbox pattern will ensure that database state and intended event publication are recorded atomically before external delivery.
-
-The API and worker must not invoke each other's internal implementation directly.
+Future asynchronous workflows will use a transactional outbox and Apache Kafka.
+Publication and consumption will be at least once, so record keys, event schema
+versions, consumer groups, processed-event constraints, retries, and dead-letter
+handling must be explicit.
 
 ## Data Ownership
 
-PostgreSQL is the authoritative source of durable domain state.
+PostgreSQL is the authoritative source of durable domain state. Redis will hold
+shared but non-authoritative cache and rate-limit state. Kafka will retain event
+records for asynchronous workflows; it will not replace the transactional system
+of record.
 
-Redis will provide shared, non-authoritative state for capabilities such as caching and distributed rate limiting. Correctness must not depend exclusively on cached data.
-
-Prometheus stores operational time-series metrics. Grafana queries those metrics but is not itself a metric store.
+Prometheus stores operational time series. Grafana queries Prometheus and does
+not own application state.
 
 ## Local Development
 
-Docker Compose provides:
+Docker Compose provides PostgreSQL, Redis, the API, worker, Prometheus, and
+Grafana. Kafka will be added in KRaft mode for Sprint 5. Compose service names
+provide internal DNS; developers access published ports through `localhost`.
 
-- PostgreSQL
-- Redis
-- API service
-- Worker service
-- Prometheus
-- Grafana
+Integration tests use PostgreSQL Testcontainers so Flyway, constraints,
+transactions, and row-lock behavior are exercised against the target database
+engine rather than an in-memory substitute.
 
-Compose service names provide DNS discovery inside the local network. For example, Prometheus reaches the API through `api:8080`, while a developer reaches it through `localhost:8080`.
+## Validated and Deferred Claims
+
+Sprint 3 integration tests validate zero overbooking for concurrent requests
+against one local API instance, idempotent duplicate handling, ownership, and
+exactly-once capacity restoration during cancellation.
+
+The project does not yet claim multi-replica validation, Kafka delivery
+guarantees, Redis-global rate limiting, payment reconciliation, or waitlist
+correctness. Those claims require their scheduled implementation and tests.
 
 ## Design Principles
 
 - Prefer correctness over feature count.
 - Keep synchronous domain logic cohesive.
-- Introduce distributed boundaries only when they serve a clear purpose.
-- Make duplicate requests and message delivery safe.
-- Treat PostgreSQL as the source of truth.
+- Use PostgreSQL as the source of truth and concurrency boundary.
+- Make retries safe and state transitions explicit.
+- Keep transactions short while holding scarce-resource locks.
+- Introduce distributed boundaries only with tested delivery semantics.
 - Keep shared code intentionally small.
-- Expose operational health and metrics from the beginning.
-- Validate distributed-system claims with multi-replica testing.
+- Validate multi-replica claims with multi-replica tests.

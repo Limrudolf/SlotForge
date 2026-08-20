@@ -1,15 +1,18 @@
 package com.slotforge.api.session;
 
 import java.time.Instant;
+import java.util.Currency;
 import java.util.UUID;
 
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import com.slotforge.api.event.Event;
+import com.slotforge.api.common.persistence.CurrencyAttributeConverter;
 import com.slotforge.api.venue.Venue;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -47,6 +50,13 @@ public class EventSession {
     @Column(name = "display_timezone", nullable = false, length = 100)
     private String displayTimezone;
 
+    @Column(name = "unit_price_minor", nullable = false)
+    private long unitPriceMinor;
+
+    @Convert(converter = CurrencyAttributeConverter.class)
+    @Column(name = "currency", nullable = false, length = 3)
+    private Currency currency;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 30)
     private EventSessionStatus status;
@@ -72,13 +82,25 @@ public class EventSession {
             Venue venue,
             Instant startTimeUtc,
             Instant endTimeUtc,
-            String displayTimezone
+            String displayTimezone,
+            long unitPriceMinor,
+            Currency currency
     ) {
+        if (unitPriceMinor <= 0) {
+            throw new IllegalArgumentException(
+                    "Unit price must be positive"
+            );
+        }
         this.event = event;
         this.venue = venue;
         this.startTimeUtc = startTimeUtc;
         this.endTimeUtc = endTimeUtc;
         this.displayTimezone = displayTimezone;
+        this.unitPriceMinor = unitPriceMinor;
+        this.currency = java.util.Objects.requireNonNull(
+                currency,
+                "Currency is required"
+        );
         this.status = EventSessionStatus.SCHEDULED;
     }
 
@@ -109,6 +131,10 @@ public class EventSession {
     public String getDisplayTimezone() {
         return displayTimezone;
     }
+
+    public long getUnitPriceMinor() { return unitPriceMinor; }
+
+    public Currency getCurrency() { return currency; }
 
     public EventSessionStatus getStatus() {
         return status;

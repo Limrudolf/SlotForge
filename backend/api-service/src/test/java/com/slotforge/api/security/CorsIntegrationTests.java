@@ -36,7 +36,8 @@ class CorsIntegrationTests {
                 .header("Access-Control-Request-Method", "POST")
                 .header(
                         "Access-Control-Request-Headers",
-                        "authorization,content-type,x-correlation-id"
+                        "authorization,content-type,idempotency-key,"
+                                + "x-correlation-id"
                 )
                 .method("OPTIONS", HttpRequest.BodyPublishers.noBody())
                 .build();

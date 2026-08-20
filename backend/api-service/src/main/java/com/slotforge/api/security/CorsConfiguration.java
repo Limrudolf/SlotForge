@@ -23,7 +23,10 @@ public class CorsConfiguration {
                 "GET", "POST", "PATCH", "DELETE", "OPTIONS"
         ));
         configuration.setAllowedHeaders(List.of(
-                "Authorization", "Content-Type", "X-Correlation-ID"
+                "Authorization",
+                "Content-Type",
+                "Idempotency-Key",
+                "X-Correlation-ID"
         ));
         configuration.setExposedHeaders(List.of(
                 "Location", "X-Correlation-ID"

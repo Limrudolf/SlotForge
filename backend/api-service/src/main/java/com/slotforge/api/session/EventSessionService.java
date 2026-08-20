@@ -1,6 +1,8 @@
 package com.slotforge.api.session;
 
 import java.time.ZoneId;
+import java.util.Currency;
+import java.util.Locale;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
@@ -68,13 +70,18 @@ public class EventSessionService {
         String displayTimezone = ZoneId
                 .of(request.displayTimezone().trim())
                 .getId();
+        Currency currency = Currency.getInstance(
+                request.currency().trim().toUpperCase(Locale.ROOT)
+        );
 
         EventSession session = new EventSession(
                 event,
                 venue,
                 request.startTime().toInstant(),
                 request.endTime().toInstant(),
-                displayTimezone
+                displayTimezone,
+                request.unitPriceMinor(),
+                currency
         );
 
         eventSessionRepository.save(session);
@@ -97,7 +104,9 @@ public class EventSessionService {
                         "venueId", venue.getId().toString(),
                         "startTimeUtc", session.getStartTimeUtc().toString(),
                         "endTimeUtc", session.getEndTimeUtc().toString(),
-                        "totalCapacity", request.totalCapacity()
+                        "totalCapacity", request.totalCapacity(),
+                        "unitPriceMinor", request.unitPriceMinor(),
+                        "currency", currency.getCurrencyCode()
                 )
         );
 

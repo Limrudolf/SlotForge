@@ -114,6 +114,11 @@ class SessionApiIntegrationTests {
                 "Europe/Stockholm",
                 session.getDisplayTimezone()
         );
+        assertEquals(10_000L, session.getUnitPriceMinor());
+        assertEquals(
+                java.util.Currency.getInstance("SEK"),
+                session.getCurrency()
+        );
         assertEquals(
                 EventSessionStatus.SCHEDULED,
                 session.getStatus()
@@ -141,6 +146,12 @@ class SessionApiIntegrationTests {
         ));
         assertTrue(createResponse.body().contains(
                 "\"displayTimezone\":\"Europe/Stockholm\""
+        ));
+        assertTrue(createResponse.body().contains(
+                "\"unitPriceMinor\":10000"
+        ));
+        assertTrue(createResponse.body().contains(
+                "\"currency\":\"SEK\""
         ));
 
         HttpResponse<String> availabilityResponse = sendGet(
@@ -551,7 +562,9 @@ class SessionApiIntegrationTests {
                  "startTime": "%s",
                  "endTime": "%s",
                  "displayTimezone": "%s",
-                 "totalCapacity": %d
+                 "totalCapacity": %d,
+                 "unitPriceMinor": 10000,
+                 "currency": "SEK"
                }
                """.formatted(
                 venueId,

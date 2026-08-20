@@ -58,9 +58,38 @@ public class BookingSlot {
     }
 
     public BookingSlot(EventSession eventSession, int totalCapacity) {
+        if (totalCapacity <= 0) {
+            throw new IllegalArgumentException("Total capacity must be positive");
+        }
         this.eventSession = eventSession;
         this.totalCapacity = totalCapacity;
         this.remainingCapacity = totalCapacity;
+    }
+
+    public boolean canReserve(int quantity) {
+        return quantity > 0 && quantity <= remainingCapacity;
+    }
+
+    public void reserve(int quantity) {
+        requirePositiveQuantity(quantity);
+        if (quantity > remainingCapacity) {
+            throw new IllegalStateException("Insufficient remaining capacity");
+        }
+        remainingCapacity -= quantity;
+    }
+
+    public void release(int quantity) {
+        requirePositiveQuantity(quantity);
+        if (remainingCapacity + quantity > totalCapacity) {
+            throw new IllegalStateException("Released capacity exceeds total capacity");
+        }
+        remainingCapacity += quantity;
+    }
+
+    private static void requirePositiveQuantity(int quantity) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("Quantity must be positive");
+        }
     }
 
     public UUID getId() {

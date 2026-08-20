@@ -4,7 +4,7 @@
 
 SlotForge is an API-first event-booking backend designed to explore correctness under high-concurrency demand. The project focuses on scarce-capacity reservations, idempotency, asynchronous workflows, observability, and production-style deployment practices.
 
-> Current status: Sprint 1 provides the relational domain model and APIs for venues, events, sessions, and availability. Authentication and concurrency-safe booking begin in later sprints.
+> Current status: Sprint 4 adds trusted minor-unit pricing, idempotent fake-payment callbacks, atomic confirmation/failure/timeout workflows, and database-backed reservation expiry to the Sprint 3 concurrency-safe booking engine.
 
 ## Architecture
 
@@ -105,7 +105,7 @@ Default local Grafana credentials are documented in `.env.example`. They must no
 The API accepts cross-origin browser requests only from the exact origins in
 `CORS_ALLOWED_ORIGINS` (comma-separated). The local default is
 `http://localhost:5173`. CORS permits the `Authorization`, `Content-Type`, and
-`X-Correlation-ID` request headers and exposes `Location` and
+`Idempotency-Key`, and `X-Correlation-ID` request headers and exposes `Location` and
 `X-Correlation-ID` response headers. Credentialed cookie requests are disabled
 because SlotForge currently returns access and refresh tokens in JSON.
 
@@ -164,7 +164,7 @@ documented, verified false positive.
   more susceptible to public rate limits. This does not disable scanning or
   lower the CVSS failure threshold.
 
-## Sprint 1 API Examples
+## API Examples
 
 Create a venue:
 
@@ -216,7 +216,9 @@ curl -i -X POST http://localhost:8080/api/v1/events/{eventId}/sessions \
     "startTime": "2026-10-10T19:00:00+02:00",
     "endTime": "2026-10-10T22:00:00+02:00",
     "displayTimezone": "Europe/Stockholm",
-    "totalCapacity": 500
+    "totalCapacity": 500,
+    "unitPriceMinor": 10000,
+    "currency": "SEK"
   }'
 ```
 
@@ -247,6 +249,108 @@ Invalid requests use one error shape:
 ```
 
 All endpoint schemas and constraints are available through Swagger UI.
+
+### Sprint 3 booking flow
+
+Booking creation requires a customer access token and a client-generated
+idempotency key. Reuse the same key only when retrying the same logical request;
+generate a new key for a new booking attempt.
+
+```bash
+IDEMPOTENCY_KEY="$(uuidgen)"
+
+curl -i -X POST \
+  "http://localhost:8080/api/v1/sessions/{sessionId}/bookings" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "Idempotency-Key: ${IDEMPOTENCY_KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"quantity":1}'
+```
+
+The first successful request returns `201 Created`. An identical replay returns
+`200 OK` with the same booking and `Location`. Reusing the key for another
+session or quantity returns `409 Conflict`.
+
+```bash
+curl -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  "http://localhost:8080/api/v1/bookings/{bookingId}"
+
+curl -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  "http://localhost:8080/api/v1/me/bookings?page=0&size=20"
+
+curl -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  "http://localhost:8080/api/v1/bookings/{bookingId}/state-transitions"
+
+curl -i -X POST \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  "http://localhost:8080/api/v1/bookings/{bookingId}/cancel"
+```
+
+### Booking consistency model
+
+PostgreSQL is the consistency boundary. Booking creation locks the session's
+`booking_slots` row with `SELECT ... FOR UPDATE`, evaluates the latest remaining
+capacity, decrements it, and persists the booking, item, initial transition, and
+idempotency result in one transaction. This prevents overbooking across threads
+and API processes; no correctness claim depends on an in-memory Java lock.
+
+Idempotency is scoped by `(user_id, idempotency_key)` and protected by a unique
+constraint. A SHA-256 fingerprint binds the key to the session and quantity.
+Concurrent duplicates either observe the committed result after waiting for the
+capacity lock or lose the unique-key race, roll back, and resolve the winner in
+a fresh transaction.
+
+Cancellation uses optimistic version checking for the low-contention booking
+state and a pessimistic lock for shared capacity. The booking version is claimed
+before capacity is restored, so competing cancellation attempts cannot release
+the same allocation twice. See
+[Booking Consistency](docs/architecture/booking-consistency.md) and
+[ADR 0002](docs/adr/0002-pessimistic-vs-optimistic-locking.md).
+
+### Sprint 4 payment and expiry flow
+
+Session prices use integer minor units and recognized ISO 4217 currencies. A
+booking item snapshots that price when capacity is reserved, so payment intent
+creation never trusts a client-supplied amount.
+
+```bash
+curl -i -X POST \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  "http://localhost:8080/api/v1/bookings/{bookingId}/payment-intent"
+
+curl -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  "http://localhost:8080/api/v1/payment-intents/{paymentIntentId}"
+```
+
+The administrative fake-provider endpoints accept a stable event ID. Repeating
+the same logical callback returns `replayed=true` without applying its state or
+capacity effect again.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer ${ADMIN_ACCESS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"eventId":"evt-123","occurredAt":"2026-08-21T00:00:00Z"}' \
+  "http://localhost:8080/api/v1/fake-payments/{paymentIntentId}/authorize"
+
+curl -X POST \
+  -H "Authorization: Bearer ${ADMIN_ACCESS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"eventId":"evt-124","occurredAt":"2026-08-21T00:01:00Z"}' \
+  "http://localhost:8080/api/v1/fake-payments/{paymentIntentId}/fail"
+
+curl -X POST \
+  -H "Authorization: Bearer ${ADMIN_ACCESS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"eventId":"evt-125","occurredAt":"2026-08-21T00:15:00Z"}' \
+  "http://localhost:8080/api/v1/fake-payments/{paymentIntentId}/timeout"
+```
+
+Authorization confirms the booking without changing its already-held capacity.
+Failure and timeout atomically release capacity. A bounded scheduler scans at
+most 100 overdue pending bookings per run, defaults to a 30-second fixed delay,
+and uses PostgreSQL row locks plus state revalidation so duplicate work across
+API replicas cannot release capacity twice.
 
 ## Building and Testing
 
@@ -336,7 +440,7 @@ Planned capabilities include:
 - Concurrency-safe booking with PostgreSQL row locks
 - Idempotent booking requests
 - Fake payment workflows
-- Transactional outbox and AWS SQS
+- Transactional outbox and Apache Kafka
 - Waitlist promotion
 - Redis caching and distributed rate limiting
 - Structured logging and operational dashboards

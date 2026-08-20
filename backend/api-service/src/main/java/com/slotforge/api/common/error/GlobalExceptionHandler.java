@@ -16,11 +16,20 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 
 import com.slotforge.api.auth.EmailAlreadyRegisteredException;
 import com.slotforge.api.auth.InvalidCredentialsException;
+import com.slotforge.api.booking.InsufficientCapacityException;
+import com.slotforge.api.booking.IdempotencyKeyConflictException;
+import com.slotforge.api.booking.BookingNotFoundException;
+import com.slotforge.api.booking.BookingOwnershipException;
+import com.slotforge.api.booking.InvalidBookingStateTransitionException;
 import com.slotforge.api.event.EventNotFoundException;
+import com.slotforge.api.payment.PaymentIntentNotFoundException;
+import com.slotforge.api.payment.PaymentIntentUnavailableException;
+import com.slotforge.api.payment.PaymentEventConflictException;
 import com.slotforge.api.event.EventOwnershipException;
 import com.slotforge.api.refreshtoken.InvalidRefreshTokenException;
 import com.slotforge.api.session.EventSessionNotFoundException;
@@ -35,7 +44,9 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({
             EventNotFoundException.class,
             VenueNotFoundException.class,
-            EventSessionNotFoundException.class
+            EventSessionNotFoundException.class,
+            BookingNotFoundException.class,
+            PaymentIntentNotFoundException.class
     })
     public ResponseEntity<ApiError> handleResourceNotFound(
             RuntimeException exception,
@@ -171,6 +182,72 @@ public class GlobalExceptionHandler {
         );
     }
 
+    @ExceptionHandler(InsufficientCapacityException.class)
+    public ResponseEntity<ApiError> handleInsufficientCapacity(
+            InsufficientCapacityException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(IdempotencyKeyConflictException.class)
+    public ResponseEntity<ApiError> handleIdempotencyKeyConflict(
+            IdempotencyKeyConflictException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(PaymentIntentUnavailableException.class)
+    public ResponseEntity<ApiError> handlePaymentIntentUnavailable(
+            PaymentIntentUnavailableException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(PaymentEventConflictException.class)
+    public ResponseEntity<ApiError> handlePaymentEventConflict(
+            PaymentEventConflictException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ResponseEntity<ApiError> handleMissingRequestHeader(
+            MissingRequestHeaderException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.BAD_REQUEST,
+                "Required request header is missing: "
+                        + exception.getHeaderName(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
     @ExceptionHandler(InvalidCredentialsException.class)
     public ResponseEntity<ApiError> handleInvalidCredentials(
             InvalidCredentialsException exception,
@@ -217,6 +294,32 @@ public class GlobalExceptionHandler {
     ) {
         return buildResponse(
                 HttpStatus.FORBIDDEN,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(BookingOwnershipException.class)
+    public ResponseEntity<ApiError> handleBookingOwnership(
+            BookingOwnershipException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.FORBIDDEN,
+                exception.getMessage(),
+                request.getRequestURI(),
+                List.of()
+        );
+    }
+
+    @ExceptionHandler(InvalidBookingStateTransitionException.class)
+    public ResponseEntity<ApiError> handleInvalidBookingTransition(
+            InvalidBookingStateTransitionException exception,
+            HttpServletRequest request
+    ) {
+        return buildResponse(
+                HttpStatus.CONFLICT,
                 exception.getMessage(),
                 request.getRequestURI(),
                 List.of()
